@@ -1,11 +1,13 @@
 # 眼动时序数据分组与预测
 
-## 这个项目能做什么
-- 多组眼动数据自动分组  
-- 输入一组新数据，返回最可能的类别和概率  
-- 输出结果文件与可视化图片  
+本项目用于对眼动时序数据进行聚类分析，并可基于聚类结果训练分类器，支持对新会话进行预测与可视化。
 
-## 快速上手（3 步）
+## 功能概览
+- 聚类：KMeans / 层次聚类 / DBSCAN
+- 特征提取：从多 CSV 时序数据中提取统计与时序特征
+- 输出可视化：PCA 2D 散点图
+- 监督分类：SVM / XGBoost
+- 新样本预测：输出所属 cluster 与 2D 坐标
 
 ### 1. 安装依赖
 ```bash
@@ -50,10 +52,18 @@ exam_0/
 python cluster_cognitive_data.py --data_root cognitive_data --unit session --k 4
 ```
 
-格式 B：
-```bash
-python cluster_eye_tracking.py --data_dir data --k 4
-```
+可选参数：
+- `--time_col` / `--id_col`: 指定时间列与样本列名
+- `--csv_glob`: CSV 匹配规则（默认 *.csv）
+- `--json_path`: 指定 JSON 文件
+
+## 查看结果（输出说明）
+聚类完成后会在 `outputs/` 目录生成：
+- `features.csv`：每个样本的特征向量
+- `clusters.csv`：聚类标签
+- `embedding_2d.csv`：2D 坐标（PCA）
+- `cluster_plot.png`：聚类可视化图（可选）
+- `pca_model.joblib`：用于预测新样本坐标的 PCA 模型
 
 ## 查看结果
 输出在 `outputs/` 目录：
@@ -63,9 +73,24 @@ python cluster_eye_tracking.py --data_dir data --k 4
 - `features.csv`：特征文件（后续训练用）  
 
 ## 训练分类器（让新数据可预测）
+训练步骤基于 `outputs/` 里的聚类结果：
+
+**1）用 SVM 训练（推荐先用这个）**
 ```bash
 python train_classifier.py --features outputs/features.csv --labels outputs/clusters.csv --algo svm --out_dir outputs_supervised
 ```
+
+**2）用 XGBoost 训练（可选）**
+```bash
+python train_classifier.py --features outputs/features.csv --labels outputs/clusters.csv --algo xgboost --out_dir outputs_supervised_xgb
+```
+
+**训练后会生成：**
+- `model_*.joblib`：训练好的模型  
+- `metrics.json`：训练指标  
+- `test_predictions.csv`：测试集预测（如果样本足够）  
+
+> 样本太少时会跳过测试集评估，这是正常的。
 
 ## 预测新数据
 ```bash
