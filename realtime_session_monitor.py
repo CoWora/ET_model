@@ -24,7 +24,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Iterable, Set
 
-from predict_utils import predict_session, PredictionResult, Unit
+from predict_utils import predict_session, PredictionResult
 
 
 REQUIRED_FILES = {
@@ -60,33 +60,26 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--classifier_model",
         type=str,
-        default="Model/ET_model/outputs_supervised/model_svm.joblib",
-        help="分类器模型路径。",
+        default="Model/ET_model/outputs_supervised_task/model_svm.joblib",
+        help="分类器模型路径（task 级 6 类模型）。",
     )
     parser.add_argument(
         "--pca_model",
         type=str,
-        default="Model/ET_model/outputs/pca_model.joblib",
-        help="PCA 模型路径。",
+        default="Model/ET_model/outputs_task_cluster/pca_model.joblib",
+        help="PCA 模型路径（task 级 PCA）。",
     )
     parser.add_argument(
         "--features_template",
         type=str,
-        default="Model/ET_model/outputs/features.csv",
-        help="特征模板 CSV 路径。",
+        default="Model/ET_model/outputs_task_cluster/features.csv",
+        help="特征模板 CSV 路径（task 级特征）。",
     )
     parser.add_argument(
         "--log_jsonl",
         type=str,
-        default="Model/ET_model/realtime_predictions.jsonl",
-        help="将每次预测结果追加写入的 JSONL 文件路径（每行一个 JSON 对象）。",
-    )
-    parser.add_argument(
-        "--unit",
-        type=str,
-        default="task",
-        choices=["session", "task"],
-        help="预测粒度：session=整场实验 1 条；task=按每个 task_id 多条（默认 task）。",
+        default="Model/ET_model/realtime_predictions_task_supervised.jsonl",
+        help="将每次预测结果追加写入的 JSONL 文件路径（每行一个 JSON 对象，task 级）。",
     )
     parser.add_argument(
         "--run_once",
@@ -129,23 +122,18 @@ def predict_one_session(
     classifier_model: Path,
     pca_model: Path,
     features_template: Path,
-    unit: Unit = "session",
 ) -> list[PredictionResult]:
     """对单个 session 目录运行一次预测。
 
-    - unit="session": 返回长度为 1 的列表（整场实验一条）
-    - unit="task"   : 返回每个 task 一条的列表
+    返回每个 task 一条的列表（task 级预测）
     """
     result = predict_session(
         session_dir,
         classifier_model=classifier_model,
         pca_model=pca_model,
         features_template=features_template,
-        unit=unit,
     )
-    if isinstance(result, list):
-        return result
-    return [result]
+    return list(result)
 
 
 def append_log(log_path: Path, session_dir: Path, results: list[PredictionResult]) -> None:
@@ -191,7 +179,7 @@ def main() -> int:
     print(f"- PCA 模型: {pca_model}")
     print(f"- 特征模板: {features_template}")
     print(f"- 日志文件: {log_path}")
-    print(f"- 预测粒度: {args.unit}")
+    print(f"- 预测粒度: task（按每个 task_id 一条）")
     print("=" * 80)
 
     processed: Set[Path] = set()
@@ -210,13 +198,11 @@ def main() -> int:
                 print("\n" + "-" * 80)
                 print(f"[INFO] 开始预测 session: {session_dir}")
                 try:
-                    # 默认按 task 级别进行预测（可通过 --unit 切换）
                     results = predict_one_session(
                         session_dir,
                         classifier_model=classifier_model,
                         pca_model=pca_model,
                         features_template=features_template,
-                        unit=args.unit,
                     )
                 except Exception as e:  # noqa: BLE001
                     print(f"[ERROR] 预测失败: {session_dir}")
