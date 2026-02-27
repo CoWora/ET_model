@@ -55,6 +55,13 @@ def _load_dataset(features_path: Path, labels_path: Path, key_col: str, label_co
         raise ValueError(f"labels 需要包含 {key_col} 与 {label_col}，实际列：{list(ldf.columns)}")
 
     merged = fdf.merge(ldf[[key_col, label_col]], on=key_col, how="inner")
+
+    # 若使用 task 级样本，丢弃 sample_key 中带有 "::task=none" 的占位段
+    # 这些是“无任务/休息”段，不应参与监督训练
+    if key_col in merged.columns:
+        key_str = merged[key_col].astype(str)
+        mask_valid = ~key_str.str.contains("::task=none")
+        merged = merged[mask_valid]
     if merged.empty:
         raise ValueError("features 与 labels 合并后为空：请检查 key_col 是否一致，或路径是否指向同一批输出")
 

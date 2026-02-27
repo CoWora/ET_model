@@ -281,54 +281,218 @@ def extract_cognitive_features(
         if session_dur is None and not gaze.empty and "timestamp" in gaze.columns:
             _, _, session_dur = _time_range_seconds(gaze["timestamp"])
 
-        def build_base_features(gaze_sub: pd.DataFrame) -> dict[str, float]:
+        def build_base_features(
+            gaze_sub: pd.DataFrame,
+            fix_sub: pd.DataFrame,
+            blinks_sub: pd.DataFrame,
+            tr_sub: pd.DataFrame,
+            ev_sub: pd.DataFrame,
+            tasks_sub: pd.DataFrame,
+            *,
+            segment_duration: float | None,
+            add_meta: bool,
+        ) -> dict[str, float]:
+            """
+            根据传入的子数据表计算一段时间（一个 session 或一个 task）的特征。
+            - gaze_sub / fix_sub / blinks_sub / tr_sub / ev_sub / tasks_sub 均应已按时间或 task_id 切好
+            - segment_duration 用于 blink rate 等“单位时间”特征；对于 task 级别，尽量使用该 task 的持续时间
+            - add_meta=True 时会把 session 级的 meta 统计（总帧数等）加入特征；仅适用于 unit=session
+            """
             f: dict[str, float] = {}
             f.update(_extract_gaze_timeseries_features(gaze_sub, cfg=cfg))
-            f.update(_extract_fixation_features(fix))
-            f.update(_extract_blink_features(blinks, session_dur))
-            f.update(_extract_transition_features(tr))
-            f.update(_extract_event_features(ev))
-            f.update(_extract_task_features(tasks))
-            # meta 里的总量也加进来（如果有）
-            for mk in [
-                "total_gaze_records",
-                "total_fixations",
-                "total_transitions",
-                "total_blinks",
-                "total_tasks",
-            ]:
-                if mk in meta:
-                    try:
-                        f[f"meta__{mk}"] = float(meta[mk])
-                    except Exception:
-                        pass
-            if session_dur is not None and np.isfinite(session_dur):
-                f["meta__session_duration"] = float(session_dur)
+            f.update(_extract_fixation_features(fix_sub))
+            f.update(_extract_blink_features(blinks_sub, segment_duration))
+            f.update(_extract_transition_features(tr_sub))
+            f.update(_extract_event_features(ev_sub))
+            f.update(_extract_task_features(tasks_sub))
+
+            if add_meta:
+                # meta 里的总量也加进来（如果有）
+                for mk in [
+                    "total_gaze_records",
+                    "total_fixations",
+                    "total_transitions",
+                    "total_blinks",
+                    "total_tasks",
+                ]:
+                    if mk in meta:
+                        try:
+                            f[f"meta__{mk}"] = float(meta[mk])
+                        except Exception:
+                            pass
+                if session_dur is not None and np.isfinite(session_dur):
+                    f["meta__session_duration"] = float(session_dur)
             return f
 
         session_id = sdir.name
 
         if unit == "session":
-            rows.append(build_base_features(gaze))
+            rows.append(
+                build_base_features(
+                    gaze,
+                    fix,
+                    blinks,
+                    tr,
+                    ev,
+                    tasks,
+                    segment_duration=session_dur,
+                    add_meta=True,
+                )
+            )
             index.append(session_id)
             continue
 
-        # unit == "task"：按 gaze_data 的 task_id 切分（若没有 task_id，则退化为 session）
+        # ------------ unit == "task"：按 task 级别切分 ------------
+
+        # 1) 基础检查：若 gaze 没有 task_id，则退化为 session 级
+        # （以保持向后兼容）
         if gaze.empty or "task_id" not in gaze.columns:
-            rows.append(build_base_features(gaze))
+            rows.append(
+                build_base_features(
+                    gaze,
+                    fix,
+                    blinks,
+                    tr,
+                    ev,
+                    tasks,
+                    segment_duration=session_dur,
+                    add_meta=False,
+                )
+            )
             index.append(f"{session_id}::task=__all__")
             continue
 
         task_ids = gaze["task_id"].dropna().astype(str).unique().tolist()
+        # 过滤掉非真实任务的占位标记（例如浏览/休息段标记为 "none"）
+        # 这些不应作为独立 task 参与聚类与监督训练
+        task_ids = [tid for tid in task_ids if tid != "none"]
         if not task_ids:
-            rows.append(build_base_features(gaze))
+            rows.append(
+                build_base_features(
+                    gaze,
+                    fix,
+                    blinks,
+                    tr,
+                    ev,
+                    tasks,
+                    segment_duration=session_dur,
+                    add_meta=False,
+                )
+            )
             index.append(f"{session_id}::task=__all__")
             continue
 
+        # 2) 从 tasks.csv 中构建每个 task 的时间窗口（start_time, end_time）
+        task_time_map: dict[str, tuple[float | None, float | None, float | None]] = {}
+        if not tasks.empty and "task_id" in tasks.columns:
+            tdf = tasks.copy()
+            tdf["_task_id_str"] = tdf["task_id"].astype(str)
+            start_col = "start_time" if "start_time" in tdf.columns else None
+            end_col = "end_time" if "end_time" in tdf.columns else None
+            for _, row in tdf.iterrows():
+                tid_str = str(row["_task_id_str"])
+                t0: float | None = None
+                t1: float | None = None
+                dur: float | None = None
+                if start_col is not None and end_col is not None:
+                    try:
+                        t0 = float(row[start_col])
+                        t1 = float(row[end_col])
+                        dur = max(0.0, t1 - t0)
+                    except Exception:
+                        t0, t1, dur = None, None, None
+                # 如果没有 start/end 列，尝试使用 duration 字段
+                if dur is None and "duration" in tdf.columns:
+                    try:
+                        dur = float(row["duration"])
+                    except Exception:
+                        dur = None
+                task_time_map[tid_str] = (t0, t1, dur)
+
+        # 3) 按 task_id / 时间窗口切分各个表
         for tid in sorted(task_ids):
-            sub = gaze[gaze["task_id"].astype(str) == tid]
-            rows.append(build_base_features(sub))
-            index.append(f"{session_id}::task={tid}")
+            tid_str = str(tid)
+
+            # --- gaze: 先按 task_id 切分，若为空再按时间窗口兜底 ---
+            gaze_sub = gaze[gaze["task_id"].astype(str) == tid_str]
+            t0: float | None = None
+            t1: float | None = None
+            tdur: float | None = None
+            if tid_str in task_time_map:
+                t0, t1, tdur = task_time_map[tid_str]
+
+            if gaze_sub.empty and t0 is not None and t1 is not None and "timestamp" in gaze.columns:
+                ts = pd.to_numeric(gaze["timestamp"], errors="coerce")
+                gaze_sub = gaze[(ts >= t0) & (ts <= t1)]
+
+            # 如果 tasks 表里有该 task 的独立行，则作为 task 级 features 的来源
+            tasks_sub = pd.DataFrame()
+            if not tasks.empty and "task_id" in tasks.columns:
+                tasks_sub = tasks[tasks["task_id"].astype(str) == tid_str]
+
+            # 若 tdur 仍为 None，则优先使用 tasks_sub["duration"]，再退化为 gaze_sub 的时间跨度
+            if tdur is None:
+                if not tasks_sub.empty and "duration" in tasks_sub.columns:
+                    dv = pd.to_numeric(tasks_sub["duration"], errors="coerce").dropna().astype("float64")
+                    tdur = float(dv.iloc[0]) if not dv.empty else None
+                elif not gaze_sub.empty and "timestamp" in gaze_sub.columns:
+                    _, _, gd = _time_range_seconds(gaze_sub["timestamp"])
+                    tdur = gd
+
+            # --- fixations: 优先按 task_id 切分，若没有 task_id 或为空则按时间区间（start_time/end_time 与 task 窗口有交集） ---
+            fix_sub = pd.DataFrame()
+            if not fix.empty:
+                if "task_id" in fix.columns:
+                    fix_sub = fix[fix["task_id"].astype(str) == tid_str]
+                if fix_sub.empty and t0 is not None and t1 is not None and "start_time" in fix.columns:
+                    st = pd.to_numeric(fix["start_time"], errors="coerce")
+                    if "end_time" in fix.columns:
+                        et = pd.to_numeric(fix["end_time"], errors="coerce")
+                        mask = (st <= t1) & (et >= t0)
+                    else:
+                        mask = (st >= t0) & (st <= t1)
+                    fix_sub = fix[mask]
+
+            # --- blinks: 按 task_id 或 timestamp 区间 ---
+            blinks_sub = pd.DataFrame()
+            if not blinks.empty:
+                if "task_id" in blinks.columns:
+                    blinks_sub = blinks[blinks["task_id"].astype(str) == tid_str]
+                if blinks_sub.empty and t0 is not None and t1 is not None and "timestamp" in blinks.columns:
+                    bt = pd.to_numeric(blinks["timestamp"], errors="coerce")
+                    blinks_sub = blinks[(bt >= t0) & (bt <= t1)]
+
+            # --- AOI transitions: 按 task_id 或 timestamp 区间 ---
+            tr_sub = pd.DataFrame()
+            if not tr.empty:
+                if "task_id" in tr.columns:
+                    tr_sub = tr[tr["task_id"].astype(str) == tid_str]
+                if tr_sub.empty and t0 is not None and t1 is not None and "timestamp" in tr.columns:
+                    tt = pd.to_numeric(tr["timestamp"], errors="coerce")
+                    tr_sub = tr[(tt >= t0) & (tt <= t1)]
+
+            # --- events: 按 task_id 或 timestamp 区间 ---
+            ev_sub = pd.DataFrame()
+            if not ev.empty:
+                if "task_id" in ev.columns:
+                    ev_sub = ev[ev["task_id"].astype(str) == tid_str]
+                if ev_sub.empty and t0 is not None and t1 is not None and "timestamp" in ev.columns:
+                    et = pd.to_numeric(ev["timestamp"], errors="coerce")
+                    ev_sub = ev[(et >= t0) & (et <= t1)]
+
+            rows.append(
+                build_base_features(
+                    gaze_sub,
+                    fix_sub,
+                    blinks_sub,
+                    tr_sub,
+                    ev_sub,
+                    tasks_sub,
+                    segment_duration=tdur,
+                    add_meta=False,  # task 级别不再注入 session 级 meta 统计，避免任务之间“串味”
+                )
+            )
+            index.append(f"{session_id}::task={tid_str}")
 
     feat_df = pd.DataFrame(rows, index=pd.Index(index, name="sample_key"))
     return feat_df

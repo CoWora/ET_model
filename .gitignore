@@ -11,3 +11,8 @@ run.log
 cognitive_data/
 cognitive_data_synth/
 data/
+
+# Allow committing small, human-reviewed mapping summaries if present
+!outputs/
+!outputs/cluster_load_mapping.csv
+!outputs/cluster_load_summary.csv

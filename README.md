@@ -49,7 +49,8 @@ exam_0/
 ### 3. 开始分组
 格式 A：
 ```bash
-python cluster_cognitive_data.py --data_root cognitive_data --unit session --k 4
+# 在 EyeTrace 项目根目录下，直接使用 data/ 作为根目录（包含多个 session 子目录）
+python Model/ET_model/cluster_cognitive_data.py --data_root data --unit session --k 4 --out_dir Model/ET_model/outputs
 ```
 
 可选参数：
@@ -70,7 +71,9 @@ python cluster_cognitive_data.py --data_root cognitive_data --unit session --k 4
 - `clusters.csv`：每个样本属于哪一类  
 - `embedding_2d.csv`：二维坐标  
 - `cluster_plot.png`：可视化图  
-- `features.csv`：特征文件（后续训练用）  
+- `features.csv`：特征文件（后续训练用）
+- `cluster_load_summary.csv`：每个 cluster 的关键特征均值 + 相对认知负荷等级
+- `cluster_load_mapping.csv`：cluster → 相对认知负荷等级的精简映射表
 
 ## 训练分类器（让新数据可预测）
 训练步骤基于 `outputs/` 里的聚类结果：
@@ -94,12 +97,16 @@ python train_classifier.py --features outputs/features.csv --labels outputs/clus
 
 ## 预测新数据
 ```bash
-python predict_single_session.py \
-  --session_dir cognitive_data/session_001 \
-  --classifier_model outputs_supervised/model_svm.joblib \
-  --pca_model outputs/pca_model.joblib \
-  --features_template outputs/features.csv
+python Model/ET_model/predict_single_session.py \
+  --session_dir data/20260124_140152 \
+  --classifier_model Model/ET_model/outputs_supervised/model_svm.joblib \
+  --pca_model Model/ET_model/outputs/pca_model.joblib \
+  --features_template Model/ET_model/outputs/features.csv
 ```
+预测结果 `PredictionResult` 中同时包含：
+- `predicted_cluster`：所属聚类
+- `coordinates_2d`：二维坐标
+- `relative_load_level` / `relative_load_label`：基于当前聚类分析得到的相对认知负荷等级
 
 ## 如果分组不满意怎么办
 1) 打开 `outputs/clusters.csv`，手动改成你认为正确的类别  

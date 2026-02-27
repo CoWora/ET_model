@@ -1,0 +1,28 @@
+{
+  "_comment": "Task-level clustering feature weights. Applied AFTER StandardScaler (z-score), so values >1 increase that feature's influence on distance.",
+  "_recommended_feature_prefixes": "fix__,blink__,trans__,task__",
+
+  "task__duration__mean": 3.0,
+  "task__duration__std": 1.5,
+
+  "trans__n": 2.5,
+  "trans__same_frac": 1.2,
+  "trans__from_aoi__entropy": 1.2,
+  "trans__to_aoi__entropy": 1.2,
+
+  "fix__n": 1.4,
+  "fix__duration__sum": 1.5,
+  "fix__duration__mean": 2.0,
+  "fix__duration__std": 1.2,
+  "fix__duration__median": 1.2,
+  "fix__aoi_region__n_unique": 1.4,
+  "fix__aoi_region__entropy": 1.5,
+  "fix__aoi_region__top1_prop": 1.1,
+
+  "blink__n": 1.3,
+
+  "task__difficulty__mean": 1.2,
+  "task__subjective_difficulty__mean": 1.5,
+  "task__subjective_effort__mean": 1.8
+}
+

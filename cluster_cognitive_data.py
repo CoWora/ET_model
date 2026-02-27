@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import json
 import joblib
 import shutil
 from pathlib import Path
+from typing import Dict
 
 import matplotlib.pyplot as plt
 import pandas as pd
 from sklearn.decomposition import PCA
 
-from eyerunn_cluster import cluster_features
-from eyerunn_cluster.cognitive import discover_sessions, extract_cognitive_features
+# 作为包运行时（python -m Model.ET_model.cluster_cognitive_data），使用相对导入
+from .eyerunn_cluster import cluster_features
+from .eyerunn_cluster.cognitive import discover_sessions, extract_cognitive_features
 
 
 def _parse_args() -> argparse.Namespace:
@@ -18,8 +21,8 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--data_root",
         type=str,
-        default="cognitive_data",
-        help="包含多个 session 子目录的根目录（或直接指定某个 session 目录）",
+        default="data",
+        help="包含多个 session 子目录的根目录（或直接指定某个 session 目录）；在 EyeTrace 项目中默认为项目根下的 data/ 目录",
     )
     p.add_argument("--unit", type=str, default="session", choices=["session", "task"], help="聚类单位：按会话或按任务")
 
@@ -39,6 +42,25 @@ def _parse_args() -> argparse.Namespace:
         choices=["copy", "move", "list"],
         help="分区模式：copy 复制/ move 移动/ list 仅输出清单",
     )
+    p.add_argument(
+        "--feature_prefixes",
+        type=str,
+        default="fix__,blink__,trans__,task__",
+        help=(
+            "用于聚类的特征前缀，逗号分隔。例如 'fix__,blink__,trans__,task__' 只使用这些前缀开头的特征；"
+            "留空则不做筛选，使用全部特征。"
+        ),
+    )
+    p.add_argument(
+        "--feature_weights_json",
+        type=str,
+        default=None,
+        help=(
+            "特征权重配置 JSON 文件路径（可选）。"
+            "格式: {\"fix__duration__mean\": 2.0, \"trans__n\": 1.5, ...}；"
+            "仅影响聚类时的距离权重，不会改变导出的 features.csv。"
+        ),
+    )
     return p.parse_args()
 
 
@@ -47,36 +69,80 @@ def main() -> int:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    feats = extract_cognitive_features(args.data_root, unit=args.unit)
-    print(f"[INFO] discovered samples: {len(feats)} (unit={args.unit}) from {Path(args.data_root).resolve()}")
-    feats.to_csv(out_dir / "features.csv", index=True, encoding="utf-8-sig")
+    # 原始完整特征表（用于后续汇总与可视化）
+    feats_all = extract_cognitive_features(args.data_root, unit=args.unit)
+    print(f"[INFO] discovered samples: {len(feats_all)} (unit={args.unit}) from {Path(args.data_root).resolve()}")
+    feats_all.to_csv(out_dir / "features.csv", index=True, encoding="utf-8-sig")
 
-    if len(feats) < 2 and args.algo in ("kmeans", "agglo"):
-        raise ValueError(f"当前只有 {len(feats)} 个样本，无法进行 {args.algo} 聚类。请检查 data_root 是否指向包含 100 个 session 的目录。")
+    if len(feats_all) < 2 and args.algo in ("kmeans", "agglo"):
+        raise ValueError(
+            f"当前只有 {len(feats_all)} 个样本，无法进行 {args.algo} 聚类。"
+            "请检查 data_root 是否指向包含足够 session / task 的目录。"
+        )
 
-    if args.algo in ("kmeans", "agglo") and args.k > len(feats) and len(feats) > 0:
-        print(f"[WARN] k={args.k} 大于样本数 n={len(feats)}，已自动下调为 k={len(feats)}")
-        args.k = int(len(feats))
+    # 按前缀选择用于聚类的特征子集（默认更偏向与认知负荷相关的特征）
+    feats_for_cluster = feats_all.copy()
+    prefix_raw = (args.feature_prefixes or "").strip()
+    if prefix_raw:
+        prefixes = [p.strip() for p in prefix_raw.split(",") if p.strip()]
+        if prefixes:
+            cols_keep = [c for c in feats_all.columns if any(c.startswith(p) for p in prefixes)]
+            if not cols_keep:
+                raise ValueError(
+                    f"按 feature_prefixes={prefixes} 未匹配到任何特征列；"
+                    f"当前可用列示例: {list(feats_all.columns)[:10]}"
+                )
+            feats_for_cluster = feats_all[cols_keep].copy()
+            print(f"[INFO] using {len(cols_keep)} features for clustering (prefix filter: {prefixes})")
+
+    # 读取特征权重 JSON（可选）
+    feature_weights: Dict[str, float] | None = None
+    if args.feature_weights_json:
+        w_path = Path(args.feature_weights_json)
+        if not w_path.exists():
+            raise FileNotFoundError(f"feature_weights_json 文件不存在: {w_path}")
+        with w_path.open("r", encoding="utf-8") as f:
+            raw = json.load(f)
+        if not isinstance(raw, dict):
+            raise ValueError("feature_weights_json 格式错误：应为 {\"feature_name\": weight, ...} 的对象")
+        feature_weights = {}
+        for k, v in raw.items():
+            try:
+                feature_weights[str(k)] = float(v)
+            except Exception:
+                continue
+        print(f"[INFO] loaded {len(feature_weights)} feature weights from {w_path}")
+
+    if args.algo in ("kmeans", "agglo") and args.k > len(feats_for_cluster) and len(feats_for_cluster) > 0:
+        print(f"[WARN] k={args.k} 大于样本数 n={len(feats_for_cluster)}，已自动下调为 k={len(feats_for_cluster)}")
+        args.k = int(len(feats_for_cluster))
 
     res = cluster_features(
-        feats,
+        feats_for_cluster,
         algo=args.algo,
         k=args.k,
         dbscan_eps=args.dbscan_eps,
         dbscan_min_samples=args.dbscan_min_samples,
         random_state=args.random_state,
+        feature_weights=feature_weights,
     )
 
-    clusters = pd.DataFrame({"sample_key": feats.index, "cluster": res.labels})
+    clusters = pd.DataFrame({"sample_key": feats_all.index, "cluster": res.labels})
     clusters.to_csv(out_dir / "clusters.csv", index=False, encoding="utf-8-sig")
 
     emb = pd.DataFrame(
-        {"sample_key": feats.index, "x": res.embedding_2d[:, 0], "y": res.embedding_2d[:, 1], "cluster": res.labels}
+        {
+            "sample_key": feats_all.index,
+            "x": res.embedding_2d[:, 0],
+            "y": res.embedding_2d[:, 1],
+            "cluster": res.labels,
+        }
     )
     emb.to_csv(out_dir / "embedding_2d.csv", index=False, encoding="utf-8-sig")
 
     # 保存 PCA 模型（用于后续预测新样本的 2D 坐标）
-    X_processed = res.pipeline.transform(feats)
+    # 注意：此处仅使用聚类时选取的特征子集，以保证维度一致
+    X_processed = res.pipeline.transform(feats_for_cluster)
     pca = PCA(n_components=2, random_state=args.random_state)
     pca.fit(X_processed)
     joblib.dump({"pipeline": res.pipeline, "pca": pca}, out_dir / "pca_model.joblib")
@@ -100,7 +166,9 @@ def main() -> int:
         plt.close()
 
     # 摘要
-    print(f"[OK] samples: {len(feats)}, features: {feats.shape[1]}")
+    # n_samples: 所有样本数（task/session）
+    # n_features_used: 实际用于聚类的特征数（可能因 feature_prefixes 被筛选）
+    print(f"[OK] samples: {len(feats_all)}, features_used_for_clustering: {feats_for_cluster.shape[1]}")
     uniq = sorted(set(int(x) for x in res.labels))
     print(f"[OK] clusters: {uniq}")
     if res.silhouette is not None:
