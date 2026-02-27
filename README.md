@@ -95,7 +95,7 @@ python train_classifier.py --features outputs/features.csv --labels outputs/clus
 
 > 样本太少时会跳过测试集评估，这是正常的。
 
-## 预测新数据
+## 预测新数据（离线单 session）
 ```bash
 python Model/ET_model/predict_single_session.py \
   --session_dir data/20260124_140152 \
@@ -107,6 +107,49 @@ python Model/ET_model/predict_single_session.py \
 - `predicted_cluster`：所属聚类
 - `coordinates_2d`：二维坐标
 - `relative_load_level` / `relative_load_label`：基于当前聚类分析得到的相对认知负荷等级
+
+## 已训练好的模型位置（示例）
+
+- `outputs_supervised/`：基于 **session 级聚类** 训练的监督模型  
+  - `model_svm.joblib` / `model_xgboost.joblib`
+  - `metrics.json` 等训练指标
+- `outputs_supervised_task/`：基于 **任务级聚类** 训练的监督模型（推荐用于实时任务级预测）  
+  - `model_svm.joblib`：当前默认使用的任务级 SVM 模型  
+  - `metrics.json`：当前样本量下的训练指标（主要用于 sanity check）
+
+> 这两个目录中的模型文件都已经纳入 Git 管理，克隆仓库后可直接加载使用（无需重新训练），具体训练过程与配置在 `WORKLOG.md` 的阶段 C/G 中有完整记录。
+
+## 实时任务级预测与总控脚本（核心入口）
+
+> 详细设计、试跑记录和字段说明，见 `WORKLOG.md` 中的“阶段 G：任务级监督模型 + 实时预测”部分。下面只给一个“最少上手说明”。
+
+### 总控脚本：`realtime_session_monitor.py`
+
+- 功能：  
+  - 持续监听 `data/xxxxxx_realtime/` 目录下由采集端写入的 AOI/眼动数据  
+  - 实时聚合“当前任务”的特征，并调用**任务级监督模型**预测其所属 cluster + 相对负荷等级  
+  - 将每一次预测追加写入 `realtime_predictions_task_supervised.jsonl`
+- 依赖的已训练模型与模板：  
+  - `outputs_task_cluster/features.csv`：任务级特征模板（对齐列名/顺序）  
+  - `outputs_task_cluster/pca_model.joblib`：任务级 PCA + 预处理 pipeline  
+  - `outputs_supervised_task/model_svm.joblib`：任务级监督 SVM 模型
+
+### 典型运行方式（示例）
+
+在 EyeTrace 项目根目录下：
+
+```bash
+cd C:\Users\YNS\Desktop\EyeTrace
+py -3.10 Model\ET_model\realtime_session_monitor.py ^
+  --data_root data ^
+  --task_classifier Model\ET_model\outputs_supervised_task\model_svm.joblib ^
+  --task_pca_model Model\ET_model\outputs_task_cluster\pca_model.joblib ^
+  --task_features_template Model\ET_model\outputs_task_cluster\features.csv
+```
+
+- 采集端负责持续往 `data/20260227_233556_realtime/` 这类目录写入 AOI/眼动 CSV；  
+- 总控脚本会周期性读取最新数据、更新特征，并将预测结果写入：  
+  - `Model/ET_model/realtime_predictions_task_supervised.jsonl`
 
 ## 如果分组不满意怎么办
 1) 打开 `outputs/clusters.csv`，手动改成你认为正确的类别  
