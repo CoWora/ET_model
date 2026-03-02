@@ -7,7 +7,29 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from eyerunn_cluster import cluster_features, extract_features_per_sample, load_multicsv_timeseries
+# 兼容两种运行方式：
+# 1) 作为包模块：python -m Model.ET_model.cluster_eye_tracking
+# 2) 直接脚本：python Model\ET_model\cluster_eye_tracking.py
+try:
+    # 包内相对导入（推荐）
+    from .eyerunn_cluster import (
+        cluster_features,
+        extract_features_per_sample,
+        load_multicsv_timeseries,
+    )
+except ImportError:  # pragma: no cover - 仅在脚本直接运行时触发
+    import sys
+    from pathlib import Path as _Path
+
+    _THIS_DIR = _Path(__file__).resolve().parent
+    if str(_THIS_DIR) not in sys.path:
+        sys.path.insert(0, str(_THIS_DIR))
+
+    from eyerunn_cluster import (  # type: ignore[no-redef]
+        cluster_features,
+        extract_features_per_sample,
+        load_multicsv_timeseries,
+    )
 
 
 def _parse_args() -> argparse.Namespace:

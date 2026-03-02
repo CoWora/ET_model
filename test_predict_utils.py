@@ -13,20 +13,20 @@ def test_single_predict():
     print("测试 1: 单个 session 预测（便捷函数）")
     print("=" * 60)
 
-    result = predict_session(
+    results = predict_session(
         "cognitive_data_synth/synth_0001",
         classifier_model="outputs_supervised_svm/model_svm.joblib",
         pca_model="outputs_synth/pca_model.joblib",
         features_template="outputs_synth/features.csv",
     )
-
-    print(f"[OK] 样本: {result.sample_key}")
-    print(f"[OK] 预测 cluster: {result.predicted_cluster}")
-    print(f"[OK] 2D 坐标: ({result.coordinates_2d[0]:.4f}, {result.coordinates_2d[1]:.4f})")
-    if result.probabilities:
-        print("[OK] 各类别概率:")
-        for k, v in sorted(result.probabilities.items(), key=lambda x: x[1], reverse=True):
-            print(f"    {k}: {v:.3f}")
+    for i, result in enumerate(results, start=1):
+        print(f"[OK] 样本 {i}: {result.sample_key}")
+        print(f"[OK] 预测 cluster: {result.predicted_cluster}")
+        print(f"[OK] 2D 坐标: ({result.coordinates_2d[0]:.4f}, {result.coordinates_2d[1]:.4f})")
+        if result.probabilities:
+            print("[OK] 各类别概率:")
+            for k, v in sorted(result.probabilities.items(), key=lambda x: x[1], reverse=True):
+                print(f"    {k}: {v:.3f}")
     print()
 
 
@@ -67,7 +67,7 @@ def test_error_handling():
 
     # 测试不存在的 session
     try:
-        predict_session("不存在的目录")
+        _ = predict_session("不存在的目录")
         print("[FAIL] 应该抛出 FileNotFoundError")
     except FileNotFoundError:
         print("[OK] 正确捕获 FileNotFoundError（session 不存在）")

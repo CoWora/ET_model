@@ -80,12 +80,12 @@ python Model/ET_model/cluster_cognitive_data.py --data_root data --unit session 
 
 **1）用 SVM 训练（推荐先用这个）**
 ```bash
-python train_classifier.py --features outputs/features.csv --labels outputs/clusters.csv --algo svm --out_dir outputs_supervised
+python Model/ET_model/train_classifier.py --features outputs/features.csv --labels outputs/clusters.csv --algo svm --out_dir outputs_supervised
 ```
 
 **2）用 XGBoost 训练（可选）**
 ```bash
-python train_classifier.py --features outputs/features.csv --labels outputs/clusters.csv --algo xgboost --out_dir outputs_supervised_xgb
+python Model/ET_model/train_classifier.py --features outputs/features.csv --labels outputs/clusters.csv --algo xgboost --out_dir outputs_supervised_xgb
 ```
 
 **训练后会生成：**
@@ -134,6 +134,20 @@ python Model/ET_model/predict_single_session.py \
   - `outputs_task_cluster/pca_model.joblib`：任务级 PCA + 预处理 pipeline  
   - `outputs_supervised_task/model_svm.joblib`：任务级监督 SVM 模型
 
+### 常见报错：特征维度不匹配（例如 191 vs 185）
+
+如果你看到类似报错：
+
+- `X has 191 features, but SimpleImputer is expecting 185 features as input.`
+
+含义是：**预测时喂给模型的特征列数/顺序** 与 **该模型训练时拟合(SimpleImputer/Pipeline fit)的特征列数/顺序** 不一致（常见原因：`features.csv` 模板增删了列，但模型还是旧的）。
+
+解决方式（推荐按优先级）：
+
+- **重新训练模型**：用同一套 `features.csv` + `clusters.csv` 重新训练，产出新的 `model_*.joblib`。
+- **确保模板与模型来自同一次输出**：`--features_template`（或 `--task_features_template`）应指向训练该模型时那份 `features.csv`。
+- **使用最新代码**：新版本会在 `model_*.joblib` 中保存训练用 `feature_columns`，预测时优先按模型列名对齐，并在模板不一致时打印明确警告。
+
 ### 典型运行方式（示例）
 
 在 EyeTrace 项目根目录下：
@@ -153,4 +167,4 @@ py -3.10 Model\ET_model\realtime_session_monitor.py ^
 
 ## 如果分组不满意怎么办
 1) 打开 `outputs/clusters.csv`，手动改成你认为正确的类别  
-2) 重新运行 `train_classifier.py`，模型会用你的修正结果再训练  
+2) 重新运行 `Model/ET_model/train_classifier.py`，模型会用你的修正结果再训练  

@@ -4,13 +4,27 @@ import csv
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import joblib
 import numpy as np
 import pandas as pd
 
-from eyerunn_cluster.cognitive import extract_cognitive_features
+# 兼容两种运行方式：
+# 1) 作为包模块：python -m Model.ET_model.xxx
+# 2) 直接脚本：python Model\ET_model\xxx.py
+try:
+    # 包内相对导入（推荐）
+    from .eyerunn_cluster.cognitive import extract_cognitive_features
+except ImportError:  # pragma: no cover - 仅在脚本直接运行时触发
+    import sys
+    from pathlib import Path as _Path
+
+    _THIS_DIR = _Path(__file__).resolve().parent
+    if str(_THIS_DIR) not in sys.path:
+        sys.path.insert(0, str(_THIS_DIR))
+
+    from eyerunn_cluster.cognitive import extract_cognitive_features  # type: ignore[no-redef]
 
 
 # 兼容：某些 joblib 产物在序列化时记录了 `Model.ET_model...` 的模块路径。
@@ -21,12 +35,16 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 
-# 兜底映射：当找不到 `cluster_load_mapping.csv` 时使用（默认 4 cluster 的 session 级语义）
+# 兜底映射：当找不到 `cluster_load_mapping.csv` 时使用
+# 注意：这里已经对齐到 **task 级 6 类模型** 的默认语义，
+# 与 `outputs_task_cluster/cluster_load_mapping.csv` 一致。
 _FALLBACK_CLUSTER_LOAD_MAPPING: dict[str, tuple[int, str]] = {
-    "0": (3, "中高负荷 / 多源信息整合型"),
-    "1": (4, "高负荷 / 持续专注解题型"),
-    "2": (2, "低负荷 / 轻量任务型"),
-    "3": (1, "极低负荷 / 轻松浏览型"),
+    "0": (2, "低负荷 / 轻量任务型"),
+    "1": (2, "低负荷 / 轻量任务型"),
+    "2": (3, "中高负荷 / 信息整合型"),
+    "3": (4, "高负荷 / 持续专注解题型"),
+    "4": (3, "中高负荷 / 信息整合型"),
+    "5": (1, "极低负荷 / 轻松浏览型"),
 }
 
 DEFAULT_LOAD_LEVEL = 0
@@ -78,8 +96,9 @@ def get_relative_load_for_cluster(
 
 @dataclass(frozen=True)
 class PredictionResult:
-    """预测结果"""
-    # 原始样本键（可能是 session_id 或 "session_id::task=xxx"）
+    """单条 **task 级** 预测结果。"""
+
+    # 原始样本键（格式通常为 "session_id::task=xxx"）
     sample_key: str
     # 解析出的 session / task 维度，方便前端展示
     session_id: str
@@ -92,9 +111,6 @@ class PredictionResult:
     # 新增：相对认知负荷等级及其说明
     relative_load_level: int
     relative_load_label: str
-
-
-Unit = Literal["session", "task"]
 
 
 class SessionPredictor:
@@ -149,8 +165,33 @@ class SessionPredictor:
         if self._pca_data is None:
             self._pca_data = joblib.load(self.pca_model_path)
         if self._feat_cols is None:
-            feats_template = pd.read_csv(self.features_template_path, index_col=0)
-            self._feat_cols = [c for c in feats_template.columns if c != "sample_key"]
+            # 优先使用模型内保存的训练列名（train_classifier.py 会写入 feature_columns）
+            # 这样即使外部 features.csv / features_template 演进增删列，也不会导致维度不匹配报错。
+            model_cols = None
+            try:
+                model_cols = self._clf_data.get("feature_columns")  # type: ignore[union-attr]
+            except Exception:
+                model_cols = None
+
+            if isinstance(model_cols, list) and model_cols:
+                self._feat_cols = [str(c) for c in model_cols]
+            else:
+                feats_template = pd.read_csv(self.features_template_path, index_col=0)
+                self._feat_cols = [c for c in feats_template.columns if c != "sample_key"]
+
+            # 额外校验：如果模板列数与模型期望不一致，给出更明确的提示（但仍按模型列对齐）
+            try:
+                feats_template = pd.read_csv(self.features_template_path, index_col=0)
+                template_cols = [c for c in feats_template.columns if c != "sample_key"]
+                if self._feat_cols and len(template_cols) != len(self._feat_cols):
+                    print(
+                        "[WARN] features_template 与分类器模型的训练特征维度不一致："
+                        f"template={len(template_cols)} vs model={len(self._feat_cols)}。"
+                        "将按模型训练列名对齐（建议重新训练模型或使用训练时的同一 features.csv 作为模板）。"
+                    )
+            except Exception:
+                # 模板读取失败时不影响预测（仍按模型列或后续逻辑）
+                pass
         if self._cluster_load_mapping is None:
             # 默认：从 features_template 同目录下自动读取映射表
             mapping_path = self.features_template_path.parent / "cluster_load_mapping.csv"
@@ -238,19 +279,15 @@ class SessionPredictor:
     def predict(
         self,
         session_dir: str | Path,
-        *,
-        unit: Unit = "session",
-    ) -> PredictionResult | list[PredictionResult]:
+    ) -> list[PredictionResult]:
         """
-        预测单个 session 的 cluster 和 2D 坐标。
+        预测**单个 session 内所有 task** 的 cluster 和 2D 坐标。
 
         Args:
             session_dir: session 目录路径（包含 6 CSV + 1 JSON）
-            unit: "session"（默认）按整场实验 1 条；"task" 按 task_id 多条。
 
         Returns:
-            - unit="session": PredictionResult
-            - unit="task"   : list[PredictionResult]
+            list[PredictionResult]：按 task 列表返回，每个 task 一条
         """
         self._ensure_loaded()
 
@@ -258,18 +295,12 @@ class SessionPredictor:
         if not session_dir.exists():
             raise FileNotFoundError(f"session 目录不存在: {session_dir}")
 
-        # 1. 提取特征
-        feats_new = extract_cognitive_features(session_dir, unit=unit)
+        # 1. 提取 task 级特征
+        feats_new = extract_cognitive_features(session_dir, unit="task")
         if feats_new.empty:
             raise ValueError("未能从该 session 提取到任何特征")
 
-        if unit == "session":
-            if len(feats_new) != 1:
-                raise ValueError(f"期望提取 1 个样本，实际得到 {len(feats_new)} 个")
-            _, result = self._predict_from_features(feats_new)
-            return result
-
-        # unit == "task"：每一行是一个 task 样本
+        # 每一行是一个 task 样本
         results: list[PredictionResult] = []
         for idx in feats_new.index:
             # 这里用 DataFrame 保持与 _predict_from_features 的接口一致
@@ -282,16 +313,12 @@ class SessionPredictor:
 def predict_session(
     session_dir: str | Path,
     *,
-    classifier_model: str | Path = "outputs_supervised/model_svm.joblib",
-    pca_model: str | Path = "outputs/pca_model.joblib",
-    features_template: str | Path = "outputs/features.csv",
-    unit: Unit = "session",
-) -> PredictionResult | list[PredictionResult]:
+    classifier_model: str | Path = "outputs_supervised_task/model_svm.joblib",
+    pca_model: str | Path = "outputs_task_cluster/pca_model.joblib",
+    features_template: str | Path = "outputs_task_cluster/features.csv",
+) -> list[PredictionResult]:
     """
-    便捷函数：预测单个 session。
-
-    - unit="session": 返回单个 PredictionResult（兼容原逻辑）
-    - unit="task"   : 返回 list[PredictionResult]，每个 task 一条
+    便捷函数：预测单个 session 内 **所有 task** 的 cluster/负荷等级/2D 坐标。
     
     用法：
         result = predict_session(\"data/20260124_140152\")
@@ -299,16 +326,16 @@ def predict_session(
     
     Args:
         session_dir: session 目录路径
-        classifier_model: 分类器模型路径（默认从 outputs_supervised/ 读取）
-        pca_model: PCA 模型路径（默认从 outputs/ 读取）
-        features_template: 特征模板路径（默认从 outputs/ 读取）
+        classifier_model: 分类器模型路径（默认使用 task 级 6 类模型：outputs_supervised_task/model_svm.joblib）
+        pca_model: PCA 模型路径（默认使用 task 级 PCA：outputs_task_cluster/pca_model.joblib）
+        features_template: 特征模板路径（默认使用 task 级特征模板：outputs_task_cluster/features.csv）
         
     Returns:
-        PredictionResult: 预测结果
+        list[PredictionResult]: 每个 task 一条预测结果
     """
     predictor = SessionPredictor(
         classifier_model=classifier_model,
         pca_model=pca_model,
         features_template=features_template,
     )
-    return predictor.predict(session_dir, unit=unit)
+    return predictor.predict(session_dir)

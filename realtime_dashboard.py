@@ -9,8 +9,8 @@ from __future__ import annotations
     py -3.10 Model\\ET_model\\realtime_dashboard.py
 
 说明：
-- 该脚本会定时读取 ``Model/ET_model/realtime_predictions.jsonl``，
-  将最新的若干条预测结果显示在一个简易窗口中。
+- 该脚本会定时读取 ``Model/ET_model/realtime_predictions_task_supervised.jsonl``，
+  将最新的若干条 **task 级** 预测结果显示在一个简易窗口中。
 - 建议与 ``realtime_session_monitor.py`` 同时运行。
 """
 
@@ -25,7 +25,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 
-LOG_PATH = Path("Model/ET_model/realtime_predictions.jsonl")
+LOG_PATH = Path("Model/ET_model/realtime_predictions_task_supervised.jsonl")
 REFRESH_INTERVAL_SEC = 2.0
 MAX_ROWS = 50
 
@@ -208,8 +208,8 @@ class RealtimeDashboardApp:
             "用法：\n"
             "1. 先运行数据采集程序，确保 session 目录不断生成；\n"
             "2. 再运行 realtime_session_monitor.py，让模型对新 session 做预测；\n"
-            "3. 最后运行本窗口脚本 realtime_dashboard.py，查看最新预测结果。\n\n"
-            "窗口会每隔数秒自动重新读取 realtime_predictions.jsonl 并更新列表。"
+            "3. 最后运行本窗口脚本 realtime_dashboard.py，查看最新 task 级预测结果。\n\n"
+            "窗口会每隔数秒自动重新读取 realtime_predictions_task_supervised.jsonl 并更新列表。"
         )
         messagebox.showinfo("帮助", msg)
 

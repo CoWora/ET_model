@@ -242,7 +242,20 @@ def main() -> int:
     # 保存模型（包含预处理 pipeline）
     _step(step, total_steps, "保存模型文件")
     model_path = out_dir / f"model_{args.algo}.joblib"
-    joblib.dump({"model": model, "label_encoder": le, "key_col": args.key_col}, model_path)
+    # 关键：保存训练时的特征列名，便于预测阶段严格对齐
+    # 否则当 features.csv 增删列后，会出现：
+    #   X has N features, but SimpleImputer is expecting M features as input.
+    feature_columns = [str(c) for c in ds.X.columns]
+    joblib.dump(
+        {
+            "model": model,
+            "label_encoder": le,
+            "key_col": args.key_col,
+            "feature_columns": feature_columns,
+            "n_features": int(ds.X.shape[1]),
+        },
+        model_path,
+    )
     print(f"[OK] model saved: {model_path.resolve()}")
     print(f"[OK] outputs written to: {out_dir.resolve()}")
     return 0

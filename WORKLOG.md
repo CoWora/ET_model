@@ -197,3 +197,94 @@ py -3.10 Model\ET_model\offline_task_dashboard.py
   - `summarize_cluster_load.py --mapping_mode manual`
   - 或在 `auto` 打分权重（脚本内 `score_cols_weights`）上做领域化微调
 
+---
+
+## 阶段 G：任务级监督模型 + 实时预测（2026‑02 以后）
+
+### G1. 任务级监督模型（基于任务聚类结果）
+
+- 目标：将“任务级聚类 + 相对负荷映射”固化为一个**可直接对新任务预测 cluster / 负荷等级**的监督模型。
+- 训练脚本：`Model/ET_model/train_classifier.py`
+- 训练数据来源：
+  - 特征：`Model/ET_model/outputs_task_cluster/features.csv`
+  - 标签：`Model/ET_model/outputs_task_cluster/clusters.csv`（cluster id 已通过 `summarize_cluster_load.py` 对齐好语义）
+- 典型命令（SVM，任务级）：
+
+```bash
+cd C:\Users\YNS\Desktop\EyeTrace
+py -3.10 Model\ET_model\train_classifier.py ^
+  --features Model\ET_model\outputs_task_cluster\features.csv ^
+  --labels Model\ET_model\outputs_task_cluster\clusters.csv ^
+  --algo svm ^
+  --out_dir Model\ET_model\outputs_supervised_task
+```
+
+- 主要产物（任务级监督模型）：
+  - `Model/ET_model/outputs_supervised_task/model_svm.joblib`
+    - 内含：`pipeline`（imputer + scaler + 任务级特征对齐）与 SVM 分类器、label encoder
+  - `Model/ET_model/outputs_supervised_task/metrics.json`
+    - 当前样本量有限，指标仅作 sanity check；后续可在数据增多后重新训练/评估。
+
+### G2. 实时任务级预测（基于 AOI 转移流）
+
+- 目标：在真实任务进行过程中，基于实时 AOI/眼动流，增量更新任务级特征，并周期性调用任务级监督模型给出**当前任务的 cluster + 相对负荷等级**。
+- 主控脚本：`Model/ET_model/realtime_session_monitor.py`
+- 关键输入：
+  - 实时 AOI/眼动采集输出（由 `Cognitive/cognitive-load-tracker` 系列脚本负责）：
+    - 目录示例：`data/20260227_233556_realtime/`
+    - 典型文件：`aoi_transitions.csv`、`fixations.csv`、`blinks.csv`、`events.csv`、`gaze_data.csv`、`tasks.csv`、`session_meta.json`
+  - 任务级聚类 + PCA 模型：
+    - `Model/ET_model/outputs_task_cluster/features.csv`（作为特征模板）
+    - `Model/ET_model/outputs_task_cluster/pca_model.joblib`（含 pipeline + PCA，用于 2D 嵌入对齐）
+  - 任务级监督模型：
+    - `Model/ET_model/outputs_supervised_task/model_svm.joblib`
+
+### G3. 实时监控典型运行方式
+
+- 工作目录：项目根 `C:\Users\YNS\Desktop\EyeTrace`
+- 典型调用（示意，实际参数以脚本内 `argparse` 为准，后续可继续补充）：
+
+```bash
+cd C:\Users\YNS\Desktop\EyeTrace
+py -3.10 Model\ET_model\realtime_session_monitor.py ^
+  --data_root data ^
+  --task_classifier Model\ET_model\outputs_supervised_task\model_svm.joblib ^
+  --task_pca_model Model\ET_model\outputs_task_cluster\pca_model.joblib ^
+  --task_features_template Model\ET_model\outputs_task_cluster\features.csv
+```
+
+- 实时运行中，脚本会周期性读取最新 session 目录（形如 `data/20260227_233556_realtime/`）下的 AOI/眼动 CSV：
+  - 聚合当前任务的特征（与任务级特征模板对齐）
+  - 通过任务级 SVM 预测 cluster + 概率分布
+  - 使用 PCA 模型计算 2D 坐标（用于可视化）
+
+### G4. 实时预测输出与追踪文件
+
+- 实时预测结果统一追加写入：
+  - `Model/ET_model/realtime_predictions_task_supervised.jsonl`
+    - 每行一个样本（通常对应 `session_id::task=...`）；
+    - 典型字段：
+      - `session_dir`：如 `C:\\Users\\YNS\\Desktop\\EyeTrace\\data\\20260227_233556_realtime`
+      - `sample_key`：如 `20260227_233556_realtime::task=task_001`
+      - `task_id`：`task_001 / task_002 / ...`
+      - `predicted_cluster` / `predicted_cluster_encoded`
+      - `coordinates_2d`：与任务级 PCA 空间对齐的 2D 坐标
+      - `probabilities`：各 cluster 的预测概率分布
+      - `relative_load_level` / `relative_load_label`：基于 `cluster_load_mapping.csv` 的相对负荷等级与文本标签
+- 说明：
+  - 当前实现中，同一任务/会话可能会有**重复写入同一条预测**（例如在实时监控中间和结束阶段各写一次）；这在日志层面是可接受的，后处理时按照 `sample_key` 去重即可。
+
+### G5. 2026‑02‑27 实时试跑记录（`20260227_233556_realtime`）
+
+- 数据目录：`data/20260227_233556_realtime/`
+  - 本次试跑主要用于验证实时链路是否闭环（AOI 采集 → 特征聚合 → 模型调用 → JSONL 记录）。
+  - `aoi_transitions.csv` 当前仅包含表头（无有效转移行），因此特征信息有限。
+- 对应预测记录（节选）位于 `Model/ET_model/realtime_predictions_task_supervised.jsonl` 末尾：
+  - `session_id = 20260227_233556_realtime`
+  - `task_id = task_001`
+  - `predicted_cluster = 0`
+  - `relative_load_level = 2`，`relative_load_label = "低负荷 / 轻量任务型"`
+  - 概率分布较为均匀（`p_max ≈ 0.37`），反映了“数据较少、模型偏向 cluster 0 但不十分确定”的状态。
+- 结论：
+  - 实时链路（采集 → 特征 → 任务级 SVM → JSONL 记录）已打通；
+  - 后续需要在“采集时长更长、AOI 转移更充分”的 session 上进一步验证稳定性与主观体验的一致性。

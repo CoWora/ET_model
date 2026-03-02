@@ -2,13 +2,13 @@ from __future__ import annotations
 
 """
 根据 `realtime_session_monitor.py` 生成的 JSONL 日志，
-可视化所有已预测 session 在二维空间中的分布（按 cluster 着色）。
+可视化所有已预测 task 在二维空间中的分布（按 cluster 着色）。
 
 用法（在项目根目录下运行）:
 
     cd C:\\Users\\YNS\\Desktop\\EyeTrace
     py -3.10 Model\\ET_model\\visualize_realtime_predictions.py ^
-        --log_jsonl Model\\ET_model\\realtime_predictions.jsonl
+        --log_jsonl Model\\ET_model\\realtime_predictions_task_supervised.jsonl
 
 如果你想把图保存成文件而不是/同时弹出窗口，可以加上：
 
@@ -26,13 +26,13 @@ import matplotlib.pyplot as plt
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="读取实时预测 JSONL 日志文件，绘制四个类别在二维空间中的散点分布图。"
+        description="读取实时预测 JSONL 日志文件，绘制各个类别在二维空间中的散点分布图。"
     )
     parser.add_argument(
         "--log_jsonl",
         type=str,
-        default="Model/ET_model/realtime_predictions.jsonl",
-        help="实时预测追加写入的 JSONL 日志文件路径（与 realtime_session_monitor.py 中的默认值一致）。",
+        default="Model/ET_model/realtime_predictions_task_supervised.jsonl",
+        help="实时预测追加写入的 JSONL 日志文件路径（与 realtime_session_monitor.py 中的默认值一致，task 级）。",
     )
     parser.add_argument(
         "--output",
